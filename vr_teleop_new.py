@@ -11,8 +11,8 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.executors import SingleThreadedExecutor
 from one_arm_control_CPP import TMRobotController
 
-from rclpy.logging import LoggingSeverity  
-from tm_msgs.srv import SendScript         
+from rclpy.logging import LoggingSeverity
+from tm_msgs.srv import SendScript
 
 
 def start_ros_listener():
@@ -39,18 +39,24 @@ def start_ros_listener():
     return node, executor, spin_thread
 
 
-def _should_send_tcp(prev_tcp, curr_tcp, last_time, min_dt, mm_deadband, deg_deadband):  # add
+# 修改：加入角度死區（若你暫不送角度，這段也不會誤觸）
+def _should_send_tcp(prev_tcp, curr_tcp, last_time, min_dt, mm_deadband, deg_deadband):
     import time
     now = time.time()
     if (now - last_time) < min_dt:
         return False, last_time
     if prev_tcp is None:
         return True, now
-    # 位置/角度變化檢查（任一軸超過死區就送）
+    # 位置死區（任一軸超過就送）
     for i in range(3):  # x,y,z in mm
         if abs(curr_tcp[i] - prev_tcp[i]) >= mm_deadband:
             return True, now
+    # 新增：角度死區（rx,ry,rz in deg）
+    for i in range(3, 6):
+        if abs(curr_tcp[i] - prev_tcp[i]) >= deg_deadband:
+            return True, now
     return False, last_time
+
 
 def _wrap_deg(a: float) -> float:
     return (a + 180.0) % 360.0 - 180.0
@@ -69,6 +75,28 @@ def apply_rotation_delta(rotation_curr, rotation_prev):
     return d_rx, d_ry, d_rz
 
 
+# 新增：五次多項式 blend 函數 alpha(s) 與產生子點工具
+def _alpha(s: float) -> float:  # 新增
+    # 6s^5 - 15s^4 + 10s^3  (C^2 連續，端點速度/加速度為 0)
+    return ((6*s - 15)*s + 10)*s*s*s
+
+def poly_blend_points(last_tcp, target_tcp, steps: int):  # 新增
+    if steps <= 1:
+        return [target_tcp[:]]
+    pts = []
+    for k in range(1, steps + 1):
+        s = k / steps
+        a = _alpha(s)
+        out = []
+        for last_v, tgt_v in zip(last_tcp, target_tcp):
+            out.append(last_v + a * (tgt_v - last_v))
+        # 角度可視需要再做 wrap，這裡沿用線性插值值即可
+        out[3] = _wrap_deg(out[3])
+        out[4] = _wrap_deg(out[4])
+        out[5] = _wrap_deg(out[5])
+        pts.append(out)
+    return pts
+
 
 def main():
     # start ROS listening and TM controller
@@ -76,12 +104,21 @@ def main():
     tm_node = TMRobotController()
     tm_node.setup_services()
     executor.add_node(tm_node)
-    last_cmd_tcp = None
-    _last_sent_time = 0.0 
-    min_cmd_interval_s = 1.0       # add: 最小送指令間隔（10Hz 上限）
-    min_mm_delta = 2.0              # add: 位置死區（mm），任一軸超過才送
-    min_deg_delta = 2.0             # add: 姿態死區（deg），任一軸超過才送
-   
+
+    # 新增：上一筆送出的目標（同時拿來當下一次 base 與 deadband 比較）
+    last_cmd_tcp = None  # 新增
+    _last_sent_time = 0.0
+    # 修改：調快一點，降低停頓感（可微調 0.15~0.30）
+    min_cmd_interval_s = 0.20
+    min_mm_delta = 1.0
+    min_deg_delta = 2.0
+
+    # 新增：blending 參數
+    blend_T = 0.40      # 新增：過渡視窗時間（秒）
+    blend_rate = 40     # 新增：插值頻率（Hz）
+    max_steps = 120     # 新增：最多產生的子點（避免爆量）
+    # 實際 steps
+    steps_default = max(1, min(max_steps, int(round(blend_T * blend_rate))))
 
     host = "0.0.0.0"
     port = 5050
@@ -92,24 +129,22 @@ def main():
     print(f"Listening on port {port}")
     conn, addr = client_socket.accept()
     print(f"Connection from {addr}")
+
     first_capture = True
     acc_x_mm = acc_y_mm = acc_z_mm = 0.0
     acc_rx = acc_ry = acc_rz = 0.0
+
     try:
         while True:
             data = conn.recv(1024).decode("utf-8").strip()
             if not data:
                 break
-            # Split the data by newline
-            data = data.split('\n')
-            if not data or not data[0]:
+            lines = data.split('\n')
+            if not lines or not lines[0]:
                 continue
-            
-            # Parse data: right hand-x, y, z, qx, qy, qz, qw, button, and left hand-x, y, z, qx, qy, qz, qw, button.
-            # Use the latest one
-            #data = data[0].split(',')
-            data = data[-1].split(',')
-            # partial data, reject
+
+            # 修改：Latest-wins，用最後一行
+            data = lines[-1].split(',')
             if len(data) < 9:
                 continue
 
@@ -117,17 +152,13 @@ def main():
 
             values = list(map(float, data))
             positionR = values[:3]
-            #print("positionR: ", positionR)
             rotationR = values[3:7]
-            #print("rotationR: ", rotationR)
             buttonR = values[7]
             print("buttonR: ", buttonR)
 
-            positionL = values[8:11]
-            #print("positionL: ", positionL)
-            rotationL = values[11:15]
-            #print("rotationL: ", rotationL)
-            buttonL = values[15]
+            positionL = values[8:11] if len(values) >= 11 else [0.0, 0.0, 0.0]
+            rotationL = values[11:15] if len(values) >= 15 else [0.0, 0.0, 0.0, 1.0]
+            buttonL = values[15] if len(values) >= 16 else 0.0
             print("buttonL: ", buttonL)
 
             if first_capture:
@@ -140,77 +171,86 @@ def main():
 
             shift_positionR = [a - b for a, b in zip(positionR, prev_positionR)]
             shift_positionL = [a - b for a, b in zip(positionL, prev_positionL)]
-
             print("shift_positionR: ", shift_positionR)
             print("shift_positionL: ", shift_positionL)
 
             # ros get current end-position
             if not pose_node.latest_pose:
                 print("[ROS] Current end-position: <waiting for /tool_pose...>")
+                # 避免解包 None，直接跳過這幀
                 prev_positionR = positionR
                 prev_rotationR = rotationR
+                prev_positionL = positionL
+                prev_rotationL = rotationL
                 continue
             else:
                 print("[ROS] Current end-position:", pose_node.latest_pose)
 
-            if last_cmd_tcp is None:  
-                base_x, base_y, base_z, base_rx, base_ry, base_rz = pose_node.latest_pose  
-            else:  
-                base_x, base_y, base_z, base_rx, base_ry, base_rz = last_cmd_tcp  
-           
+            # 用上一筆送出的目標當 base（第一次才用量測）
+            if last_cmd_tcp is None:
+                base_x, base_y, base_z, base_rx, base_ry, base_rz = pose_node.latest_pose
+            else:
+                base_x, base_y, base_z, base_rx, base_ry, base_rz = last_cmd_tcp
 
             d_rx, d_ry, d_rz = apply_rotation_delta(rotationR, prev_rotationR)
-            dx_mm = shift_positionR[0] * 1000.0
-            dy_mm = shift_positionR[1] * 1000.0
-            dz_mm = shift_positionR[2] * 1000.0
-            #new_x = base_x + dx_mm
-            #new_y = base_y + dy_mm
-            #new_z = base_z + dz_mm
-            new_rx, new_ry, new_rz = base_rx, base_ry, base_rz
-            #new_rx = _wrap_deg(base_rx + d_rx)
-            #new_ry = _wrap_deg(base_ry + d_ry)
-            #new_rz = _wrap_deg(base_rz + d_rz)
 
-            # 累加進暫存器
+            # 累加進暫存器（送出後清零）
             acc_x_mm += shift_positionR[0] * 1000.0
             acc_y_mm += shift_positionR[1] * 1000.0
             acc_z_mm += shift_positionR[2] * 1000.0
-            acc_rx   = _wrap_deg(acc_rx + d_rx)
-            acc_ry   = _wrap_deg(acc_ry + d_ry)
-            acc_rz   = _wrap_deg(acc_rz + d_rz)
-            print("[ROS] acc:", [
-                round(acc_x_mm, 2),
-                round(acc_y_mm, 2),
-                round(acc_z_mm, 2),
-                round(acc_rx, 2),
-                round(acc_ry, 2),
-                round(acc_rz, 2)
-            ])
+            # 若你現在不送角度，先保留累加但不套用；要用時開啟下面三行
+            # acc_rx   = _wrap_deg(acc_rx + d_rx)
+            # acc_ry   = _wrap_deg(acc_ry + d_ry)
+            # acc_rz   = _wrap_deg(acc_rz + d_rz)
+
+            # 目標: base + 累加位置；角度沿用 base（之後要 blend 角度再開）
             new_x = base_x + acc_x_mm
             new_y = base_y + acc_y_mm
             new_z = base_z + acc_z_mm
-            #new_rx = _wrap_deg(base_rx + acc_rx)
-            #new_ry = _wrap_deg(base_ry + acc_ry)
-            #new_rz = _wrap_deg(base_rz + acc_rz)
-            # ros set new end-position
+            new_rx, new_ry, new_rz = base_rx, base_ry, base_rz
             target_tcp = [new_x, new_y, new_z, new_rx, new_ry, new_rz]
+
+            # Debug：看看累積與目標
+            print("[ROS] acc:", [round(acc_x_mm,2), round(acc_y_mm,2), round(acc_z_mm,2)])
             print("[ROS] Target CPP:", target_tcp)
-            now = time.time()
-            fake_val = [674.57, -155.37, 697.42, 175.11, -0.7, 90.13]
-            if hasattr(tm_node, "tcp_queue"):
-                try:
-                    tm_node.tcp_queue.clear()
-                except Exception:
-                    pass
+
+            # 判斷是否該送（使用上一筆送出的點做 deadband 比較）
             should_send, _last_sent_time = _should_send_tcp(
-            last_cmd_tcp, target_tcp, _last_sent_time,
-            min_cmd_interval_s, min_mm_delta, min_deg_delta
+                last_cmd_tcp, target_tcp, _last_sent_time,
+                min_cmd_interval_s, min_mm_delta, min_deg_delta
             )
+
             if should_send:
-                tm_node.append_tcp(target_tcp)
+                # 建議：不要每次都清；避免中斷規劃。只有太長才清。
+                if hasattr(tm_node, "tcp_queue"):
+                    try:
+                        if len(tm_node.tcp_queue) > 5:
+                            tm_node.tcp_queue.clear()
+                    except Exception:
+                        pass
+
+                # 新增：五次多項式時間窗 blending（位置三軸 + 目前角度）
+                # 上一筆若不存在，直接當作已在 last；否則以 last_cmd_tcp 為起點
+                if last_cmd_tcp is None:
+                    last_for_blend = pose_node.latest_pose[:]  # 保底
+                else:
+                    last_for_blend = last_cmd_tcp[:]
+
+                steps = steps_default  # 你也可以依距離調整 steps（距離越大步數越多）
+                blend_points = poly_blend_points(last_for_blend, target_tcp, steps)
+
+                # 批次入列：控制器會按序執行，動作連續不頓
+                for p in blend_points:
+                    tm_node.append_tcp(p)
+
+                # 更新上一筆送出的點
                 last_cmd_tcp = target_tcp[:]
+
+                # 送出即清零，開始累下一批 Δ
                 acc_x_mm = acc_y_mm = acc_z_mm = 0.0
                 acc_rx = acc_ry = acc_rz = 0.0
+
+            # 更新上一幀基準
             prev_positionR = positionR
             prev_rotationR = rotationR
             prev_positionL = positionL
