@@ -58,7 +58,7 @@ class EchoRobot2CPP(Node):
         """ self.get_logger().info(
             f'RAW  pos(m)=({p.x:.5f},{p.y:.5f},{p.z:.5f}), '
             f'quat=({q.x:.4f},{q.y:.4f},{q.z:.4f},{q.w:.4f})'
-        ) """
+        )  """
         # 2)  transform to CPP（x y z rx ry rz）
         x_mm, y_mm, z_mm = p.x*1000.0, p.y*1000.0, p.z*1000.0
         rx, ry, rz = quat_to_euler_zyx_deg(q.x, q.y, q.z, q.w)
@@ -66,7 +66,7 @@ class EchoRobot2CPP(Node):
         list_output = (
             f'[{x_mm:.2f}, {y_mm:.2f}, {z_mm:.2f}, {rx:.2f}, {ry:.2f}, {rz:.2f}]'
         )
-        #self.get_logger().info(f'{list_output}')
+        self.get_logger().info(f'{list_output}')
 
 
         arr = pose_to_cpp(msg)   # 呼叫共用轉換函式

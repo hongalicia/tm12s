@@ -26,7 +26,7 @@ class TMRobotController(Node):
         while not self.script_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('等待 send_script 服務...')
 
-    def append_tcp(self, tcp_values: list, vel=80, acc=200, coord=80, fine=False):
+    def append_tcp(self, tcp_values: list, vel=200, acc=800, coord=80, fine=False):
         if len(tcp_values) != 6:
             self.get_logger().error("TCP 必須 6 個數字")
             return
@@ -36,7 +36,7 @@ class TMRobotController(Node):
                   f'{tcp_values[3]:.2f}, {tcp_values[4]:.2f}, {tcp_values[5]:.2f},'
                   f'{vel},{acc},{coord},{fine_str})')
         self.tcp_queue.append(script)
-        self.get_logger().info(f"已將腳本加入佇列: {script}")
+        #self.get_logger().info(f"已將腳本加入佇列: {script}")
 
     def _process_queue(self):
         if self._busy or not self.tcp_queue:
@@ -103,3 +103,26 @@ class TMRobotController(Node):
             self.get_logger().info(f"已清空佇列，共 {n} 筆")
         except Exception as e:
             self.get_logger().error(f"清空佇列失敗：{e}")
+
+def main():
+    rclpy.init()
+    node = TMRobotController()
+    try:
+        node.setup_services()
+
+        # 給定一個目標 TCP [x, y, z, rx, ry, rz]
+        tcp_target = [787.32, -49.51, 622.59, -165.98, 5.13, 105.33]
+        # 加進 queue
+        node.append_tcp(tcp_target, vel=200, acc=1200, coord=80, fine=False)
+
+        # 這裡跑 spin()，讓 node 的 timer (_process_queue) 自動執行 queue
+        rclpy.spin(node)
+
+    except KeyboardInterrupt:
+        print("中斷程式")
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == "__main__":
+    main()

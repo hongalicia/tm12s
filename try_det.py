@@ -1,106 +1,222 @@
 #!/usr/bin/env python3
-import math
-import rclpy
+# pose_uart_node.py
 import time
+import threading
+import rclpy
 from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
-from geometry_msgs.msg import PoseStamped
-from uart import UART
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.logging import LoggingSeverity
+from transfor_TCP import *         
 from one_arm_control_CPP import TMRobotController
+from uart import UART
 
-def _clamp(v, lo, hi): return max(lo, min(hi, v))
 
-def normalize_quat(x, y, z, w):
-    n = math.sqrt(x*x + y*y + z*z + w*w)
-    return (0.0, 0.0, 0.0, 1.0) if n == 0 else (x/n, y/n, z/n, w/n)
+def _wrap_deg(a: float) -> float:
+    return (a + 180.0) % 360.0 - 180.0
 
-def quat_to_euler_zyx_deg(qx, qy, qz, qw):
-    qx, qy, qz, qw = normalize_quat(qx, qy, qz, qw)
-    siny = 2.0 * (qw*qz + qx*qy)
-    cosy = 1.0 - 2.0 * (qy*qy + qz*qz)
-    yaw = math.atan2(siny, cosy)
-    sinp = 2.0 * (qw*qy - qz*qx)
-    sinp = _clamp(sinp, -1.0, 1.0)
-    pitch = math.asin(sinp)
-    sinr = 2.0 * (qw*qx + qy*qz)
-    cosr = 1.0 - 2.0 * (qx*qx + qy*qy)
-    roll = math.atan2(sinr, cosr)
-    return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+def _lerp_angle_deg(a: float, b: float, t: float) -> float:
+    delta = ((b - a + 180.0) % 360.0) - 180.0
+    return _wrap_deg(a + delta * t)
 
-def pose_to_cpp(pose):
-    if hasattr(pose, "pose"):
-        p = pose.pose.position
-        q = pose.pose.orientation
-    else:
-        p = pose.position
-        q = pose.orientation
-    x_mm, y_mm, z_mm = p.x*1000.0, p.y*1000.0, p.z*1000.0
-    rx, ry, rz = quat_to_euler_zyx_deg(q.x, q.y, q.z, q.w)
-    return [round(x_mm,2), round(y_mm,2), round(z_mm,2),
-            round(rx,2), round(ry,2), round(rz,2)]
+def _alpha(s: float) -> float:
+    return ((6*s - 15)*s + 10)*s*s*s
 
+def poly_blend_points(last_tcp, target_tcp, steps: int):
+    if steps <= 1:
+        return [target_tcp[:]]
+    pts = []
+    for k in range(1, steps + 1):
+        s = k / steps
+        a = _alpha(s)
+        out = []
+        out.append(last_tcp[0] + a * (target_tcp[0] - last_tcp[0]))
+        out.append(last_tcp[1] + a * (target_tcp[1] - last_tcp[1]))
+        out.append(last_tcp[2] + a * (target_tcp[2] - last_tcp[2]))
+        out.append(_lerp_angle_deg(last_tcp[3], target_tcp[3], a))
+        out.append(_lerp_angle_deg(last_tcp[4], target_tcp[4], a))
+        out.append(_lerp_angle_deg(last_tcp[5], target_tcp[5], a))
+        pts.append(out)
+    return pts
+
+def _should_send_tcp(prev_tcp, curr_tcp, last_time, min_dt, mm_deadband, deg_deadband):
+    now = time.time()
+    if (now - last_time) < min_dt:
+        return False, last_time
+    if prev_tcp is None:
+        return True, now
+    # 位置死區
+    for i in range(3):
+        if abs(curr_tcp[i] - prev_tcp[i]) >= mm_deadband:
+            return True, now
+    # 姿態死區（角度做 wrap）
+    for i in range(3, 6):
+        if abs(_wrap_deg(curr_tcp[i] - prev_tcp[i])) >= deg_deadband:
+            return True, now
+    return False, last_time
+
+
+# ---------- 主節點：Pose + UART ----------
 class PoseAndUARTNode(Node):
-    def __init__(self):
-        super().__init__('pose_and_uart_node')
-        self.latest_pose = None
-        self.controller = None   # 由 main() 注入
-        self.last_uart_time = 0.0 
-        self.create_subscription(PoseStamped, '/tool_pose', self.cb_pose, 10)
-        self.get_logger().info('已訂閱 /tool_pose')
+    def __init__(self, pose_node: Node, tm_node: TMRobotController,
+                 uart_port="/dev/ttyUSB0", uart_baud=115200):
+        super().__init__("pose_and_uart_node")
+        self.pose_node = pose_node
+        self.tm_node = tm_node
 
-        # 啟動 UART，並把回呼綁到 self.on_uart_data
-        self.uart = UART("/dev/ttyUSB0", 115200, on_data=self.on_uart_data)
+  
+        self.min_cmd_interval_s = 0.20     
+        self.min_mm_delta = 5.0            
+        self.min_deg_delta = 2.0           
+        self.blend_T = 0.40                
+        self.blend_rate = 40               
+        self.max_steps = 120               
+        self.steps_default = max(1, min(self.max_steps, int(round(self.blend_T * self.blend_rate))))
 
-    def cb_pose(self, msg: PoseStamped):
-        self.latest_pose = pose_to_cpp(msg)
-        #self.get_logger().info(f"[Pose] {self.latest_pose}")
-        #fake_val = [674.57, -155.37, 697.42, 175.11, -0.7, 90.13]
-        #self.controller.append_tcp(fake_val)
+        self._first_uart = True
+        self._prev_uart = None             # 上一筆 UART 值 [x,y,z,rx,ry,rz]
+        self._last_cmd_tcp = None          # 最近送出的點 (mm,deg)
+        self._last_sent_time = 0.0
 
-    def on_uart_data(self, uart_values):
-        now = time.time()
-        if now - self.last_uart_time < 0.5:   # ★ 限制最多 10Hz
-            return
-        self.last_uart_time = now
+        # 累積器（送出後清零）
+        self.acc_x = 0.0
+        self.acc_y = 0.0
+        self.acc_z = 0.0
+        self.acc_rx = 0.0
+        self.acc_ry = 0.0
+        self.acc_rz = 0.0
+        self.count = 0
+        # 佇列保護：保留最近 64 筆，避免整批清空
+        self.max_queue_cached = 64
 
-        if self.latest_pose is None:
-            self.get_logger().info("[融合略過] 尚未取得最新 Pose")
-            return
-        if len(uart_values) != 6:
-            self.get_logger().warn(f"[融合略過] UART 長度非 6: {len(uart_values)}")
-            return
+        # 互斥避免回呼重入
+        self._lock = threading.Lock()
 
-        new_vals = [round(p + u, 2) for p, u in zip(self.latest_pose, uart_values)]
-        self.get_logger().info(f"[融合結果] {new_vals}")
+        # 啟動 UART
+        self.uart = UART(port=uart_port, baudrate=uart_baud, on_data=self.on_uart)
+        self.get_logger().info(f"UART started on {uart_port} @ {uart_baud}")
 
-        if self.controller is not None:
-            self.controller.append_tcp(new_vals)
-        else:
-            self.get_logger().warn("controller 尚未注入，無法送入佇列")
+    # ---- UART 回呼 ----
+    def on_uart(self, values):
+        # values = [x, y, z, rx, ry, rz]，單位假設已是 mm/deg
+        with self._lock:
+            if not values or len(values) < 6:
+                return
 
-    def destroy_node(self):
-        self.uart.close()
-        super().destroy_node()
+            # 等到 /tool_pose 有資料
+            latest_pose = getattr(self.pose_node, "latest_pose", None)
+            if latest_pose is None:
+                if self._first_uart:
+                    self._prev_uart = values[:6]
+                    self._first_uart = False
+                return
 
+            # 第一次僅建立基準
+            if self._first_uart:
+                self._prev_uart = values[:6]
+                self._first_uart = False
+                return
+
+
+            drx = _wrap_deg(values[3] - self._prev_uart[3])
+            dry = _wrap_deg(values[4] - self._prev_uart[4])
+            drz = _wrap_deg(values[5] - self._prev_uart[5])
+
+            self.acc_x  += values[0]
+            self.acc_y  += values[1]
+            self.acc_z  += values[2]
+            self.acc_rx  = _wrap_deg(self.acc_rx + drx)
+            self.acc_ry  = _wrap_deg(self.acc_ry + dry)
+            self.acc_rz  = _wrap_deg(self.acc_rz + drz)
+
+            if self._last_cmd_tcp is None:
+                base = latest_pose[:]          
+            else:
+                base = self._last_cmd_tcp[:]
+
+            target_tcp = [
+                base[0] + self.acc_x * 30,
+                base[1] ,
+                base[2] ,
+                _wrap_deg(base[3] ),
+                _wrap_deg(base[4] ),
+                _wrap_deg(base[5] ),
+            ]
+
+            # 4) 節流 + 死區
+            should_send, self._last_sent_time = _should_send_tcp(
+                self._last_cmd_tcp, target_tcp, self._last_sent_time,
+                self.min_cmd_interval_s, self.min_mm_delta, self.min_deg_delta
+            )
+            self.count += 1
+            if should_send:
+                # queue 長度保護：丟舊保新
+                if hasattr(self.tm_node, "tcp_queue"):
+                    try:
+                        while len(self.tm_node.tcp_queue) > self.max_queue_cached:
+                            self.tm_node.tcp_queue.clear()
+                    except Exception:
+                        pass
+
+                last_for_blend = latest_pose[:] if (self._last_cmd_tcp is None) else self._last_cmd_tcp[:]
+                steps = self.steps_default
+                blend_points = poly_blend_points(last_for_blend, target_tcp, steps)
+
+                # 除錯觀測：一次塞幾點、目標是什麼
+                self.get_logger().info(
+                    f"[BLEND] enqueue {len(blend_points)} points -> target={list(map(lambda x: round(x,2), target_tcp))}"
+                )
+
+                #for p in blend_points:
+                self.tm_node.append_tcp(target_tcp)
+                print(self.count)
+                self._last_cmd_tcp = target_tcp[:]
+                # 清空累積器
+                self.acc_x = self.acc_y = self.acc_z = 0.0
+                self.acc_rx = self.acc_ry = self.acc_rz = 0.0
+                self.count = 0
+            # 5) 更新上一筆 UART
+            self._prev_uart = values[:6]
+
+
+# ---------- 啟動 ----------
 def main():
     rclpy.init()
-    node = PoseAndUARTNode()
-    tm_controller = TMRobotController()
-    tm_controller.setup_services()
+
+    # /tool_pose 訂閱者（輸出 (mm,deg)）
+    pose_node = EchoRobot2CPP()
+    try:
+        pose_node.get_logger().set_level(LoggingSeverity.ERROR)
+    except Exception:
+        pass
+
+    # TM 控制器
+    tm_node = TMRobotController()
+    tm_node.setup_services()
+
+    # Pose + UART 節點
+    node = PoseAndUARTNode(pose_node, tm_node, uart_port="/dev/ttyUSB0", uart_baud=115200)
+
+    # Executor
+    executor = SingleThreadedExecutor()
+    for n in (pose_node, tm_node, node):
+        executor.add_node(n)
 
     try:
-        executor = MultiThreadedExecutor()
-        executor.add_node(node)
-        executor.add_node(tm_controller)
-
-        node.controller = tm_controller  # 注入 controller
-        executor.spin()                 
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        tm_controller.destroy_node()
+        try:
+            node.uart.close()
+        except Exception:
+            pass
+        for n in (node, tm_node, pose_node):
+            try:
+                n.destroy_node()
+            except Exception:
+                pass
         rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()
