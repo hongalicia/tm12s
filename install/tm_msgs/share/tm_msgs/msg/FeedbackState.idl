@@ -1,0 +1,142 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from tm_msgs/msg/FeedbackState.msg
+// generated code does not contain a copyright notice
+
+#include "std_msgs/msg/Header.idl"
+
+module tm_msgs {
+  module msg {
+    struct FeedbackState {
+      std_msgs::msg::Header header;
+
+      @verbatim (language="comment", text=
+        "Connection Status" "\n"
+        "Ethernet connection")
+      boolean is_svr_connected;
+
+      @verbatim (language="comment", text=
+        "Listen Node connection")
+      boolean is_sct_connected;
+
+      @verbatim (language="comment", text=
+        "Response ROS Node Status" "\n"
+        "TM Ethernet Slave Communication Last CPERR Error Code")
+      int32 tmsrv_cperr;
+
+      @verbatim (language="comment", text=
+        "External Script Communication Last CPERR Error Code")
+      int32 tmscript_cperr;
+
+      @verbatim (language="comment", text=
+        "TMSVR Communication Last Data Error Code")
+      int32 tmsrv_dataerr;
+
+      @verbatim (language="comment", text=
+        "External Script Communication TMSCT (or TMSTA) Last Data Error Code")
+      int32 tmscript_dataerr;
+
+      @verbatim (language="comment", text=
+        "Disconnection Message")
+      int32 max_not_connect_in_s;
+
+      int32 disconnection_times;
+
+      @verbatim (language="comment", text=
+        "Movement")
+      sequence<double> joint_pos;
+
+      sequence<double> joint_vel;
+
+      sequence<double> joint_tor;
+
+      @verbatim (language="comment", text=
+        "flange_pose")
+      sequence<double> tool0_pose;
+
+      sequence<double> tool_pose;
+
+      sequence<double> tcp_speed;
+
+      sequence<double> tcp_force;
+
+      @verbatim (language="comment", text=
+        "Torque Data(for TM-Flow 1.84)")
+      sequence<double> joint_tor_average;
+
+      sequence<double> joint_tor_min;
+
+      sequence<double> joint_tor_max;
+
+      @verbatim (language="comment", text=
+        "Status" "\n"
+        "Link Robot Controller")
+      boolean robot_link;
+
+      @verbatim (language="comment", text=
+        "Data Table Setting is Correct")
+      boolean is_data_table_correct;
+
+      @verbatim (language="comment", text=
+        "Error or Not")
+      boolean robot_error;
+
+      @verbatim (language="comment", text=
+        "Project Runing or not")
+      boolean project_run;
+
+      @verbatim (language="comment", text=
+        "Project Pause or not")
+      boolean project_pause;
+
+      @verbatim (language="comment", text=
+        "Safety IO(Safeguard Port A trigger)")
+      boolean safetyguard_a;
+
+      @verbatim (language="comment", text=
+        "Emergency STOP")
+      boolean e_stop;
+
+      @verbatim (language="comment", text=
+        "Light")
+      uint8 camera_light;
+
+      @verbatim (language="comment", text=
+        "Last Error Code")
+      int32 error_code;
+
+      @verbatim (language="comment", text=
+        "Project Running Speed")
+      int32 project_speed;
+
+      @verbatim (language="comment", text=
+        "M/A Mode")
+      int32 ma_mode;
+
+      @verbatim (language="comment", text=
+        "Robot light")
+      int32 robot_light;
+
+      @verbatim (language="comment", text=
+        "IO")
+      sequence<uint8> cb_digital_output;
+
+      sequence<uint8> cb_digital_input;
+
+      sequence<float> cb_analog_output;
+
+      sequence<float> cb_analog_input;
+
+      sequence<uint8> ee_digital_output;
+
+      sequence<uint8> ee_digital_input;
+
+      sequence<float> ee_analog_output;
+
+      sequence<float> ee_analog_input;
+
+      @verbatim (language="comment", text=
+        "String")
+      string error_content;
+    };
+  };
+};

@@ -1,0 +1,51 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from tm_msgs/srv/SetPositions.srv
+// generated code does not contain a copyright notice
+
+
+module tm_msgs {
+  module srv {
+    module SetPositions_Request_Constants {
+      const int8 PTP_J = 1;
+      const int8 PTP_T = 2;
+      @verbatim (language="comment", text=
+        "int8 LINE_J = 3")
+      const int8 LINE_T = 4;
+    };
+    @verbatim (language="comment", text=
+      "motion_type :  PTP_J , PTP_T , LINE_T ," "\n"
+      "              LINE_J , CIRC_J ,CIRC_T , PLINE_J ,PLINE_T " "\n"
+      "More details please refer to the TM Expression Editor Manual(2.12 rev1.00) Chapter 12.6-12.9")
+    struct SetPositions_Request {
+      @verbatim (language="comment", text=
+        "int8 CIRC_J = 5" "\n"
+        "int8 CIRC_T = 6" "\n"
+        "int8 PLINE_J = 7" "\n"
+        "int8 PLINE_T = 8")
+      int8 motion_type;
+
+      sequence<double> positions;
+
+      @verbatim (language="comment", text=
+        "motion velocity: if expressed in Cartesian coordinate (unit: m/s), if expressed in joint velocity (unit: rad/s, and the maximum value is limited to pi)")
+      double velocity;
+
+      @verbatim (language="comment", text=
+        "time to reach maximum speed (unit: ms)")
+      double acc_time;
+
+      @verbatim (language="comment", text=
+        "blending value: expressed as a percentage (unit: %, and the minimum value of 0 means no blending)")
+      int32 blend_percentage;
+
+      @verbatim (language="comment", text=
+        "precise position mode : If activated, the amount of error in the final position will converge more.")
+      boolean fine_goal;
+    };
+    @verbatim (language="comment", text=
+      "ok : set motion status")
+    struct SetPositions_Response {
+      boolean ok;
+    };
+  };
+};

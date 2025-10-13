@@ -1,0 +1,34 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from tm_msgs/srv/AskItem.srv
+// generated code does not contain a copyright notice
+
+
+module tm_msgs {
+  module srv {
+    @verbatim (language="comment", text=
+      "Ask: request 'Read'" "\n"
+      "id        : The description you want to name." "\n"
+      "item      : More details please refer to the TM Expression Editor Manual(2.12 rev1.00) Chapter 14.6 TMSVR vs Chapter 14.2 svr_read" "\n"
+      "wait_time : set wait time." "\n"
+      "More details please refer to the TM Expression Editor Manual(2.12 rev1.00) Chapter 14.6 TMSVR")
+    struct AskItem_Request {
+      string id;
+
+      string item;
+
+      double wait_time;
+    };
+    @verbatim (language="comment", text=
+      "ok        : read status")
+    struct AskItem_Response {
+      boolean ok;
+
+      @verbatim (language="comment", text=
+        "id        : The description you want to name." "\n"
+        "value     : The value of asked item.")
+      string id;
+
+      string value;
+    };
+  };
+};
