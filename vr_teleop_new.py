@@ -85,6 +85,11 @@ def main():
     min_mm_delta = 2.0             
     min_deg_delta = 2.0             
 
+    period = 0.8 #(s)
+    last_sample_time = 0
+
+
+
     host = "0.0.0.0"
     port = 5050
 
@@ -96,8 +101,7 @@ def main():
     print(f"Connection from {addr}")
 
     first_capture = True
-    acc_x_mm = acc_y_mm = acc_z_mm = 0.0
-    acc_rx = acc_ry = acc_rz = 0.0
+
 
     end_time = time.time()
     try:
@@ -115,7 +119,8 @@ def main():
             start_time = time.time()
 
             # Parse data: right hand-x, y, z, qx, qy, qz, qw, button,
-            # and left hand-x, y, z, qx, qy, qz, qw, button.
+            # and left hand-x, y, z, qx, qy, qz, qw, button,
+            # and start (1/0)
             # Use the latest one
             # data = data[0].split(',')
             data = data[-1].split(',')
@@ -140,106 +145,61 @@ def main():
             # print("rotationL: ", rotationL)
             # buttonL = values[15]
             # print("buttonL: ", buttonL)
-            
+
+            start = values[16]
+            print("start: ", start)
+
             if first_capture:
-                prev_positionR = positionR
-                prev_rotationR = rotationR
-                # prev_positionL = positionL
-                # prev_rotationL = rotationL
+                prev_positionR = positionR[:]
+                prev_rotationR = rotationR[:]
+                last_sample_time = time.time()
                 first_capture = False
-                continue  # add: 第一幀只當基準，不送
-
-            shift_positionR = [a - b for a, b in zip(positionR, prev_positionR)]
-            shift_positionL = [a - b for a, b in zip(positionL, prev_positionL)]
-
-            #print("shift_positionR: ", shift_positionR)
-            # print("shift_positionL: ", shift_positionL)
-
+                continue  
+            now = time.time()
             # ros get current end-position
             if not pose_node.latest_pose:
                 # print("[ROS] Current end-position: <waiting for /tool_pose...>")
-                prev_positionR = positionR
-                prev_rotationR = rotationR
                 continue
             #else:
             #    print("[ROS] Current end-position:", pose_node.latest_pose)
 
             if last_cmd_tcp is None:
                 base_x, base_y, base_z, base_rx, base_ry, base_rz = pose_node.latest_pose
+            elif start == 1:
+                print("start = 1 ")
+                base_x, base_y, base_z, base_rx, base_ry, base_rz = pose_node.latest_pose
+                prev_positionR = positionR[:]
+                prev_rotationR = rotationR[:]
             else:
                 base_x, base_y, base_z, base_rx, base_ry, base_rz = last_cmd_tcp
 
-            d_rx, d_ry, d_rz = apply_rotation_delta(rotationR, prev_rotationR)
+            if (now - last_sample_time) >= period:
+                dx_mm = (positionR[0] - prev_positionR[0])*1000
+                dy_mm = (positionR[1] - prev_positionR[1])*1000
+                dz_mm = (positionR[2] - prev_positionR[2])*1000
+                d_rx, d_ry, d_rz = apply_rotation_delta(rotationR, prev_rotationR)
 
-            # new_x = base_x + dx_mm
-            # new_y = base_y + dy_mm
-            # new_z = base_z + dz_mm
+                new_x = base_x + dx_mm
+                new_y = base_y + dy_mm
+                new_z = base_z + dz_mm
+                new_rx = _wrap_deg(base_rx + d_rx)
+                new_ry = _wrap_deg(base_ry + d_ry)
+                new_rz = _wrap_deg(base_rz + d_rz)
+                target_tcp = [new_x, new_y, new_z, new_rx, new_ry, new_rz]
+                print("[ROS] Target CPP:", target_tcp)
 
-            new_rx, new_ry, new_rz = base_rx, base_ry, base_rz
-            # new_rx = _wrap_deg(base_rx + d_rx)
-            # new_ry = _wrap_deg(base_ry + d_ry)
-            # new_rz = _wrap_deg(base_rz + d_rz)
-
-            # 累加進暫存器
-            acc_x_mm += shift_positionR[0] * 1000.0
-            acc_y_mm += shift_positionR[1] * 1000.0
-            acc_z_mm += shift_positionR[2] * 1000.0
-            acc_rx = _wrap_deg(acc_rx + d_rx)
-            acc_ry = _wrap_deg(acc_ry + d_ry)
-            acc_rz = _wrap_deg(acc_rz + d_rz)
-
-            # print("[ROS] acc:", [
-            #     round(acc_x_mm, 2),
-            #     round(acc_y_mm, 2),
-            #     round(acc_z_mm, 2),
-            #     round(acc_rx, 2),
-            #     round(acc_ry, 2),
-            #     round(acc_rz, 2)
-            # ])
-
-            new_x = base_x + acc_x_mm
-            new_y = base_y + acc_y_mm
-            new_z = base_z + acc_z_mm
-            new_rx = _wrap_deg(base_rx + acc_rx)
-            new_ry = _wrap_deg(base_ry + acc_ry)
-            new_rz = _wrap_deg(base_rz + acc_rz)
-
-            # ros set new end-position
-            target_tcp = [new_x, new_y, new_z, new_rx, new_ry, new_rz]
-            #print("[ROS] Target CPP:", target_tcp)
-
-            now = time.time()
-            fake_val = [458.97, -72.35, 658.26, 118.17, 16.19, 113.61]
-
-            if hasattr(tm_node, "tcp_queue"):
-                try:
-                    tm_node.tcp_queue.clear()
-                except Exception:
-                    pass
-
-            should_send, _last_sent_time = _should_send_tcp(
-                last_cmd_tcp, target_tcp, _last_sent_time,
-                min_cmd_interval_s, min_mm_delta, min_deg_delta
-            )
-
-            if should_send:
+                # if hasattr(tm_node, "tcp_queue"):
+                #     try:
+                #         tm_node.tcp_queue.clear()
+                #     except Exception:
+                #         pass
+                    
                 tm_node.append_tcp(target_tcp)
                 last_cmd_tcp = target_tcp[:]
-                acc_x_mm = acc_y_mm = acc_z_mm = 0.0
-                acc_rx = acc_ry = acc_rz = 0.0
 
-                print(f'should_send time dif : {(time.time() - end_time) * 1000}')
-
-                end_time = time.time()
-                time_dif = (end_time - start_time) *1000
-                #print(f'time dif : {time_dif}')
-
-            # 更新上一幀基準
-            prev_positionR = positionR
-            prev_rotationR = rotationR
-            prev_positionL = positionL
-            prev_rotationL = rotationL
-
+                prev_positionR = positionR[:]
+                prev_rotationR = rotationR[:]
+                last_sample_time = now
             #print("========================================================================")
 
     except KeyboardInterrupt:
