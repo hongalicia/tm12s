@@ -59,14 +59,10 @@ def _wrap_deg(a: float) -> float:
 
 
 def apply_rotation_delta(rotation_curr, rotation_prev):
-    """
-    rotation_*: [qx, qy, qz, qw]
-    return: (d_rx, d_ry, d_rz) in deg, 已做 wrap 到 [-180, 180]
-    """
     rx, ry, rz = quat_to_euler_zyx_deg(*rotation_curr)
     prev_rx, prev_ry, prev_rz = quat_to_euler_zyx_deg(*rotation_prev)
-    d_rx = _wrap_deg(rx - prev_rx)
-    d_ry = _wrap_deg(ry - prev_ry)
+    d_ry = _wrap_deg(rx - prev_rx)
+    d_rx = _wrap_deg(ry - prev_ry)
     d_rz = _wrap_deg(rz - prev_rz)
     return d_rx, d_ry, d_rz
 
@@ -85,7 +81,7 @@ def main():
     min_mm_delta = 2.0             
     min_deg_delta = 2.0             
 
-    period = 0.8 #(s)
+    period = 0.4 #(s)   ＃0.8
     last_sample_time = 0
 
 
@@ -174,6 +170,7 @@ def main():
                 base_x, base_y, base_z, base_rx, base_ry, base_rz = last_cmd_tcp
 
             if (now - last_sample_time) >= period:
+                
                 dx_mm = (positionR[0] - prev_positionR[0])*1000
                 dy_mm = (positionR[1] - prev_positionR[1])*1000
                 dz_mm = (positionR[2] - prev_positionR[2])*1000
