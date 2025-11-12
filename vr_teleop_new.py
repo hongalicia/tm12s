@@ -41,13 +41,13 @@ def start_ros_listener():
 
 
 def _should_send_tcp(prev_tcp, curr_tcp, last_time, min_dt, mm_deadband, deg_deadband):  # add
-    import time
+    
     now = time.time()
-    if (now - last_time) < min_dt:
-        return False, last_time
+    # if (now - last_time) < min_dt:
+    #     return False, last_time
     if prev_tcp is None:
         return True, now
-    # 位置/角度變化檢查（任一軸超過死區就送）
+  
     for i in range(3):  # x,y,z in mm
         if abs(curr_tcp[i] - prev_tcp[i]) >= mm_deadband:
             return True, now
@@ -78,10 +78,10 @@ def main():
     last_cmd_tcp = None
     _last_sent_time = 0.0
     min_cmd_interval_s = 1      
-    min_mm_delta = 2.0             
+    min_mm_delta = 0.0             
     min_deg_delta = 2.0             
 
-    period = 0.4 #(s)   ＃0.8
+    period = 0.8 #(s)   ＃0.8
     last_sample_time = 0
 
 
@@ -133,7 +133,7 @@ def main():
             rotationR = values[3:7]
             # print("rotationR: ", rotationR)
             buttonR = values[7]
-            # print("buttonR: ", buttonR)
+            print("buttonR: ", buttonR)
 
             # positionL = values[8:11]
             # print("positionL: ", positionL)
@@ -175,7 +175,7 @@ def main():
                 dy_mm = (positionR[1] - prev_positionR[1])*1000
                 dz_mm = (positionR[2] - prev_positionR[2])*1000
                 d_rx, d_ry, d_rz = apply_rotation_delta(rotationR, prev_rotationR)
-
+                print(d_rx,d_ry,d_rz)
                 new_x = base_x + dx_mm
                 new_y = base_y + dy_mm
                 new_z = base_z + dz_mm
@@ -183,20 +183,25 @@ def main():
                 new_ry = _wrap_deg(base_ry + d_ry)
                 new_rz = _wrap_deg(base_rz + d_rz)
                 target_tcp = [new_x, new_y, new_z, new_rx, new_ry, new_rz]
-                print("[ROS] Target CPP:", target_tcp)
+                should_send, ts = _should_send_tcp(
+                last_cmd_tcp, target_tcp, _last_sent_time,
+                min_cmd_interval_s, min_mm_delta, min_deg_delta
+                )
+                if should_send:
+                    print("[ROS] Target CPP:", target_tcp)
 
-                # if hasattr(tm_node, "tcp_queue"):
-                #     try:
-                #         tm_node.tcp_queue.clear()
-                #     except Exception:
-                #         pass
-                    
-                tm_node.append_tcp(target_tcp)
-                last_cmd_tcp = target_tcp[:]
+                    # if hasattr(tm_node, "tcp_queue"):
+                    #     try:
+                    #         tm_node.tcp_queue.clear()
+                    #     except Exception:
+                    #         pass
+                        
+                    tm_node.append_tcp(target_tcp)
+                    last_cmd_tcp = target_tcp[:]
 
-                prev_positionR = positionR[:]
-                prev_rotationR = rotationR[:]
-                last_sample_time = now
+                    prev_positionR = positionR[:]
+                    prev_rotationR = rotationR[:]
+                    last_sample_time = now
             #print("========================================================================")
 
     except KeyboardInterrupt:
